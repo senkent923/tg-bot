@@ -4,9 +4,33 @@ import requests
 BOT_NAME = "Расписание Э-2511"
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-CHAT_ID = os.environ.get("CHAT_ID")  # заполняется после первого /start
 
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+
+REDIS_URL = os.environ.get("REDIS_URL")
+
+_redis_client = None
+
+
+def _get_redis():
+    global _redis_client
+    if _redis_client is None and REDIS_URL:
+        import redis
+        _redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+    return _redis_client
+
+
+def add_subscriber(chat_id):
+    client = _get_redis()
+    if client:
+        client.sadd("subscribers", chat_id)
+
+
+def get_all_subscribers() -> list:
+    client = _get_redis()
+    if not client:
+        return []
+    return list(client.smembers("subscribers"))
 
 
 def send_message(chat_id, text: str):
