@@ -4,6 +4,7 @@ from flask import Flask, request
 
 from common import send_message, format_lessons, BOT_NAME, add_subscriber, get_all_subscribers, try_claim_reminder, track_member, get_members
 from schedule_data import get_schedule_by_date
+from group_members import USERNAMES
 
 app = Flask(__name__)
 
@@ -121,8 +122,13 @@ def webhook():
 
     if cmd == "/all":
         add_subscriber(chat_id)
-        members = get_members(chat_id)
-        if not members:
+        mentions_list = [f"@{u}" for u in USERNAMES]
+
+        tracked = get_members(chat_id)
+        for uid, name in tracked.items():
+            mentions_list.append(f'<a href="tg://user?id={uid}">{name}</a>')
+
+        if not mentions_list:
             send_message(
                 chat_id,
                 "Пока никого не запомнил 🤔 Попроси всех написать что-нибудь "
@@ -130,11 +136,7 @@ def webhook():
             )
             return {"ok": True}
 
-        mentions = " ".join(
-            f'<a href="tg://user?id={uid}">{name}</a>'
-            for uid, name in members.items()
-        )
-        send_message(chat_id, mentions, html=True)
+        send_message(chat_id, " ".join(mentions_list), html=True)
         return {"ok": True}
 
     # Неизвестная команда
