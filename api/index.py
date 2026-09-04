@@ -3,7 +3,7 @@ from datetime import datetime, timezone, timedelta
 
 from flask import Flask, request
 
-from common import send_message, format_lessons, BOT_NAME, add_subscriber, get_all_subscribers
+from common import send_message, format_lessons, BOT_NAME, add_subscriber, get_all_subscribers, try_claim_reminder, track_member, get_members
 from schedule_data import get_schedule_by_date
 
 app = Flask(__name__)
@@ -27,6 +27,33 @@ def webhook():
     text = (message.get("text") or "").strip()
 
     if chat_id is None:
+        return {"ok": True}
+
+    chat_type = chat.get("type", "private")
+    from_user = message.get("from") or {}
+    from_id = from_user.get("id")
+    from_name = from_user.get("first_name")
+
+    # Запоминаем участника группы для будущей команды /all
+    if chat_type in ("group", "supergroup") and from_id and from_name:
+        track_member(chat_id, from_id, from_name)
+
+    if text.startswith("/all"):
+        add_subscriber(chat_id)
+        members = get_members(chat_id)
+        if not members:
+            send_message(
+                chat_id,
+                "Пока никого не запомнил 🤔 Попроси всех написать что-нибудь "
+                "в группе (любое сообщение), потом попробуй /all снова.",
+            )
+            return {"ok": True}
+
+        mentions = " ".join(
+            f'<a href="tg://user?id={uid}">{name}</a>'
+            for uid, name in members.items()
+        )
+        send_message(chat_id, mentions, html=True)
         return {"ok": True}
 
     if text == "/start":
@@ -79,7 +106,7 @@ def webhook():
             lessons = get_schedule_by_date(day_str)
             if lessons:
                 blocks.append(f"📅 {day_str} ({lessons[0]['weekday']}):\n\n{format_lessons(lessons)}")
-        text_out = "\n\n➖➖➖\n\n".join(blocks) if blocks else "На ближайшие 7 дней занятий не найдено 🎉"
+        text_out = "\n\n➖➖➖\n\n".join(blocks) if blocks else "На ближайшие 7 дней пар нет, красота 😎"
         send_message(chat_id, text_out)
         return {"ok": True}
 
@@ -111,3 +138,36 @@ def daily():
         sent += 1
 
     return {"ok": True, "date": today_str, "sent_to": sent}
+
+
+@app.route("/api/remind", methods=["GET"])
+def remind():
+    """Проверяет, не начинается ли какая-то пара в ближайшие 10-20 минут,
+    и если да — шлёт напоминание всем подписчикам (один раз на пару)."""
+    now = _moscow_now()
+    today_str = now.strftime("%d.%m.%Y")
+    lessons = get_schedule_by_date(today_str)
+
+    reminders_sent = 0
+    for i, l in enumerate(lessons):
+        if i != 0:
+            continue  # напоминаем только про первую пару дня
+
+        hh, mm = map(int, l["time_start"].split(":"))
+        lesson_dt = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        diff_minutes = (lesson_dt - now).total_seconds() / 60
+
+        if 10 <= diff_minutes <= 20:
+            key = f"reminded:{today_str}:{l['time_start']}:{l['subject']}"
+            if try_claim_reminder(key):
+                room = f", ауд. {l['room']}" if l["room"] else ""
+                text = (
+                    f"🏃❗️ Скоро начинаются пары!\n\n"
+                    f"📚 {l['subject']} ({l['type']}){room}\n"
+                    f"Начало в {l['time_start']}"
+                )
+                for chat_id in get_all_subscribers():
+                    send_message(chat_id, text)
+                reminders_sent += 1
+
+    return {"ok": True, "reminders_sent": reminders_sent}
